@@ -1,0 +1,105 @@
+# main.py
+import os
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
+import google.generativeai as genai
+from supabase import create_client, Client
+import uuid
+
+# -------------------- Configuration --------------------
+# Load from environment variables (recommended)
+GEMINI_API_KEY = os.getenv("AQ.Ab8RN6LI051USS6OSsqSHF5oGVzvqThMZwSHUwXWVJaQsGa8sA")
+SUPABASE_URL = os.getenv("https://dbtrhxuscvskwsaurmrb.supabase.co/")
+SUPABASE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidHJoeHVzY3Zza3dzYXVybXJiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTIyNDQ4OSwiZXhwIjoyMDk2ODAwNDg5fQ.HWPrGIP0H80o-T_7nhvbemunv2j-m5o81ihILUDvmgA")
+
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+
+# Initialize Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")  # or "gemini-pro"
+
+# Initialize Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# -------------------- FastAPI App --------------------
+app = FastAPI(title="Gemini + Supabase API", description="Example integration")
+
+# -------------------- Pydantic Models --------------------
+class GenerateRequest(BaseModel):
+    prompt: str
+    temperature: Optional[float] = 0.7
+
+class GenerateResponse(BaseModel):
+    generated_text: str
+
+class StoreDataRequest(BaseModel):
+    content: str
+    user_id: Optional[str] = None
+
+# -------------------- Endpoints --------------------
+@app.get("/")
+async def root():
+    return {"message": "FastAPI with Gemini and Supabase is running!"}
+
+@app.post("/generate", response_model=GenerateResponse)
+async def generate_text(request: GenerateRequest):
+    """Generate text using Google Gemini AI."""
+    try:
+        response = gemini_model.generate_content(
+            request.prompt,
+            generation_config={"temperature": request.temperature}
+        )
+        return GenerateResponse(generated_text=response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini error: {str(e)}")
+
+@app.post("/store")
+async def store_data(request: StoreDataRequest):
+    """Store a text entry in Supabase (table 'entries')."""
+    # You need to create a table named 'entries' with columns: id, content, user_id, created_at
+    data = {
+        "id": str(uuid.uuid4()),
+        "content": request.content,
+        "user_id": request.user_id,
+    }
+    try:
+        result = supabase.table("entries").insert(data).execute()
+        return {"status": "success", "data": result.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
+
+@app.post("/upload-file")
+async def upload_file(
+    file: UploadFile = File(...),
+    description: str = Form(...)
+):
+    """
+    Example of handling multipart form data: upload a file and store its info in Supabase.
+    """
+    # Read file content (for demonstration, we store only metadata)
+    file_content = await file.read()
+    file_size = len(file_content)
+
+    # Store metadata in Supabase (table 'files')
+    data = {
+        "id": str(uuid.uuid4()),
+        "filename": file.filename,
+        "description": description,
+        "size_bytes": file_size,
+    }
+    try:
+        result = supabase.table("files").insert(data).execute()
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "description": description,
+            "size": file_size,
+            "supabase_record": result.data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error: {str(e)}")
